@@ -1,28 +1,62 @@
-library(dplyr)
+# =============================================================================
+# SCRIPT 1 : ANALYSE DES AVIS AVEC UN MODÈLE DE LANGAGE (LLM)
+# =============================================================================
+# Ce script utilise l'API DeepSeek pour analyser 
+# automatiquement le contenu des avis clients du restaurant "La Ligne Rouge".
+# Pour chaque avis, le LLM extrait:
+# - La langue de l'avis (français ou anglais)
+# - Les sujets mentionnés (nourriture, service, ambiance, etc.)
+# - Le sentiment général (de -1 très négatif à +1 très positif)
+# - Les recommandations pour améliorer le restaurant
+# - Les points forts et points faibles identifiés
+# =============================================================================
 
-# select the first 100 rows for demonstration purposes <- REMOVE THE SLICE IF YOU WANT TO ANALYSE THE FULL DATASET
-df <- readRDS("data/ligne_rouge_cleaned.rds") %>% 
-  slice(1:100)
+# -----------------------------------------------------------------------------
+# 1. CONFIGURATION INITIALE
+# -----------------------------------------------------------------------------
+# Chargement des bibliothèques nécessaires
+library(dplyr)      # Pour la manipulation des données
+library(jsonlite)   # Pour traiter les réponses JSON du LLM (implicitement chargé)
 
-df$language <- NA
-df$sentiment <- NA
-df$topics <- NA
-df$recommendations <- NA
-df$strengths <- NA
-df$weaknesses <- NA
+# Importation des données nettoyées
+donnees <- readRDS("data/ligne_rouge_cleaned.rds")
 
+# Pour la démonstration, limiter à 100 avis
+# Supprimer cette ligne pour analyser l'ensemble complet des données
+donnees <- donnees %>% slice(1:100)
+
+# -----------------------------------------------------------------------------
+# 2. PRÉPARATION DU DATAFRAME POUR LES RÉSULTATS
+# -----------------------------------------------------------------------------
+# Ajout des colonnes qui contiendront les résultats de l'analyse
+donnees$language <- NA        # Langue de l'avis (français ou anglais)
+donnees$sentiment <- NA       # Score de sentiment (de -1 à +1)
+donnees$topics <- NA          # Sujets abordés dans l'avis
+donnees$recommendations <- NA # Suggestions d'amélioration
+donnees$strengths <- NA       # Points forts identifiés
+donnees$weaknesses <- NA      # Points faibles identifiés
+
+# -----------------------------------------------------------------------------
+# 3. CONFIGURATION DE L'API DU MODÈLE DE LANGAGE
+# -----------------------------------------------------------------------------
+# Définition du rôle du système pour le LLM
 system_prompt <- "Your role is to analyze the sentiment of restaurant reviews and classify them according to specific categories"
 
-groq <- ellmer::chat_deepseek(
+# Initialisation de la connexion avec l'API DeepSeek via le package ellmer
+# (Nécessite une clé API configurée dans l'environnement)
+deepseek <- ellmer::chat_deepseek(
   system_prompt = system_prompt,
-  model = "deepseek-chat"
+  model = "deepseek-chat"     # Utilisation du modèle DeepSeek
 )
 
-i <- 1
-print(df$review_text[i])
-
-for (i in 1:nrow(df)) {
-  
+# -----------------------------------------------------------------------------
+# 4. TRAITEMENT DE CHAQUE AVIS AVEC LE LLM
+# -----------------------------------------------------------------------------
+# Boucle principale: traitement de chaque avis un par un
+for (i in 1:nrow(donnees)) {
+  # Construction du prompt (instruction) pour le LLM
+  # Ce prompt demande au modèle d'analyser l'avis et de retourner les informations
+  # structurées dans un format JSON précis
   prompt <- paste0(
     "Analyze this restaurant review (which may be in either English or French) and extract the following information in JSON format:\n\n",
     
@@ -48,18 +82,77 @@ for (i in 1:nrow(df)) {
     "If a category has no relevant information, use an empty array [].\n",
     "For sentiment, use only one decimal place of precision.\n\n",
     
-    "Review: ", df$review_text[i]
+    "Review: ", donnees$review_text[i]  # Ajout du texte de l'avis à analyser
   )
-
-  response <- groq$chat(prompt)
-  response_parsed <- jsonlite::fromJSON(response)
   
-  df$language[i] <- response_parsed$language
-  df$sentiment[i] <- response_parsed$sentiment
-  df$topics[i] <- paste(response_parsed$topics, collapse = ", ")
-  df$recommendations[i] <- paste(response_parsed$recommendations, collapse = ", ")
-  df$strengths[i] <- paste(response_parsed$strengths, collapse = ", ")
-  df$weaknesses[i] <- paste(response_parsed$weaknesses, collapse = ", ")
-
-  Sys.sleep(5)
+  # -----------------------------------------------------------------------------
+  # 5. APPEL À L'API ET GESTION DES ERREURS
+  # -----------------------------------------------------------------------------
+  # Envoi de la requête à l'API DeepSeek avec gestion d'erreur
+  response <- tryCatch({
+    # Appel de l'API - envoie le prompt et récupère la réponse
+    deepseek$chat(prompt)
+  }, error = function(e) {
+    # En cas d'erreur, afficher un avertissement et continuer
+    warning("Erreur d'appel à l'API pour l'avis ", i, ": ", e$message)
+    return(NULL)  # Retourner NULL pour indiquer une erreur
+  })
+  
+  # Vérification que la réponse existe avant de la traiter
+  if (!is.null(response)) {
+    # Conversion (parsing) de la réponse JSON en objet R
+    response_parsed <- tryCatch({
+      jsonlite::fromJSON(response)
+    }, error = function(e) {
+      # En cas d'erreur de parsing, afficher un avertissement
+      warning("Erreur de parsing JSON pour l'avis ", i, ": ", e$message)
+      return(NULL)
+    })
+    
+    # -----------------------------------------------------------------------------
+    # 6. STOCKAGE DES RÉSULTATS DANS LE DATAFRAME
+    # -----------------------------------------------------------------------------
+    # Si le parsing a réussi, enregistrer les résultats
+    if (!is.null(response_parsed)) {
+      # Stockage des valeurs simples
+      donnees$language[i] <- response_parsed$language
+      donnees$sentiment[i] <- response_parsed$sentiment
+      
+      # Transformation des listes en chaînes de caractères pour stockage
+      # (avec gestion des cas où l'information est absente)
+      donnees$topics[i] <- if(length(response_parsed$topics) > 0) {
+        paste(response_parsed$topics, collapse = ", ")
+      } else {
+        NA
+      }
+      
+      donnees$recommendations[i] <- if(length(response_parsed$recommendations) > 0) {
+        paste(response_parsed$recommendations, collapse = ", ")
+      } else {
+        NA
+      }
+      
+      donnees$strengths[i] <- if(length(response_parsed$strengths) > 0) {
+        paste(response_parsed$strengths, collapse = ", ")
+      } else {
+        NA
+      }
+      
+      donnees$weaknesses[i] <- if(length(response_parsed$weaknesses) > 0) {
+        paste(response_parsed$weaknesses, collapse = ", ")
+      } else {
+        NA
+      }
+    }
+  }
+  
+  # Pause pour respecter les limites de l'API (rate limiting)
+  # Évite de faire trop de requêtes en trop peu de temps
+  Sys.sleep(2)  # Attendre 2 secondes entre chaque requête
 }
+
+# -----------------------------------------------------------------------------
+# 7. SAUVEGARDE DES RÉSULTATS
+# -----------------------------------------------------------------------------
+# Enregistrement du dataframe avec les résultats d'analyse
+saveRDS(donnees, "data/ligne_rouge_prompted.rds")
